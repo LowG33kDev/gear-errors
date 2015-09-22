@@ -7,4 +7,4 @@ php:
 script:
     - composer self-update
     - composer install
-    - phpunit --coverage-clover build/logs/clover.xml
+    - phpunit
