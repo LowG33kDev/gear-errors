@@ -121,7 +121,7 @@ class HtmlFormatter implements FormatterInterface
         if (is_object($type)) { // for excpetion, always display error if needed
             return $displayErrors;
         } else { // For normal error, display error_reporting
-            return ((error_reporting() & $type) && $displayErrors);
+            return ((error_reporting() & $type) || $displayErrors);
         }
     }
     
