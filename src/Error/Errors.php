@@ -82,10 +82,11 @@ class Errors
      */
     public static function errorHandler($type, $message, $file, $line)
     {
-        $header = "HTTP/1.1 500 Internal Server Error";
-        if (is_object($type)) { // for exception can find http code
-            if (property_exists(get_class($type), 'httpCode') && property_exists(get_class($type), 'httpMessage')) {
-                $header = 'HTTP/1.1 ' . $type->httpCode . ' ' . $type->httpMessage;
+		$protocol = $_SERVER['SERVER_PROTOCOL'];
+        $header = "{$protocol} 500 Internal Server Error";
+        if (is_object($type) && ($type instanceof \Gear\Exception\Exception)) { // for exception can find http code
+            if ($type->getCode() !== 0) {
+				$header = "{$protocol} {$type->getCode()} {$type->getHttpMessage()}";
             }
         }
         header($header);
