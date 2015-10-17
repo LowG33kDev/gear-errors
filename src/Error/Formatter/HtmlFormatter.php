@@ -10,24 +10,45 @@ namespace Gear\Error\Formatter;
 
 /**
  * HtmlFormatter used to render error on web browser.
+ *
+ * During development you can show backtrace and exception or error type. 
+ * In production, you can hide errors and display custom message. By default 
+ * display an Internal server error, but you can add a template for Not found 
+ * or Forbbiden error for example.
  */
 class HtmlFormatter implements FormatterInterface
 {
 
+	/**
+	 * Default error code.
+	 */
+	const DEFAULT_CODE = 500;
+	
     /**
-     * The template file.
+     * Template for development display. Can be a string, or callable.
+	 * For string, can be a filepath.
      *
-     * @var string
+     * @var mixed
      */
     private $template = '';
     
     /**
-     * The no display template file.
+     * Templates for production display. For each error code you can 
+	 * add a template.
      *
-     * @var string
+     * @var array
      */
-    private $noDisplayTemplate = '';
+    private $hiddenErrorTemplates = [];
     
+	
+	/**
+	 * Default constructor generate default template.
+	 */
+	public function __construct()
+	{
+		$this->template = [$this, 'defaultTemplate'];
+		$this->hiddenErrorTemplates[HtmlFormatter::DEFAULT_CODE] = [$this, 'defaultHiddenErrorTemplate'];
+	}
     
     /**
      * Used to format error datas for output.
@@ -44,77 +65,30 @@ class HtmlFormatter implements FormatterInterface
     {
         // Verify if display errors
         if (!$this->displayErrors($type, $displayErrors)) {
-            echo $this->noDisplayErrorTemplate();
-            return;
+            return $this->hiddenErrorTemplate($type);
         }
         
-        if (!empty($this->template) && file_exists($this->template)) {
-            return file_get_contents($this->template);
-        } else {
-            if (is_object($type)) {
-                $title = get_class($type);
-                $type = 'exception';
-            } else {
-                $title = $this->errorTitle($type);
-                $type = $this->errorClass($type);
-            }
-            
-            $backtrace = debug_backtrace(DEBUG_BACKTRACE_PROVIDE_OBJECT|DEBUG_BACKTRACE_IGNORE_ARGS);
-            array_shift($backtrace); // shift template call
-            array_shift($backtrace); // shift format call
-            
-            // Page header
-            $content = '';
-            $content .= '<header class="error-header error-header--'.$type.'">';
-            $content .= '   <h1 class="error-title error-title--'.$type.'">'.$title.'</h1>';
-            $content .= '   <h2>'.$message.'</h2>';
-            $content .= '</header>';
-                    
-            // Error details
-            $content .= '<div class="error-details">';
-            $content .= $this->writeCode($file, $line, 0);
-            
-            // $bt contains backtrace
-            $bt = '';
-            $bt .= '<div class="trace" data-trace="0">';
-            $bt .= '    <p>'.$file.' on line '.$line.'</p>';
-            $bt .= '    <strong>'.$message.'</strong>';
-            $bt .= '</div>';
-            
-            foreach ($backtrace as $k => $v) {
-                $f = isset($v['file']) ? $v['file'] : '<#unknown file>';
-                $l = isset($v['line']) ? ($v['line']+1) : ':0';
-                $content .= $this->writeCode($f, $l-1, $k+1);
-                
-                $bt .= '<div class="trace" data-trace="'.($k+1).'">';
-                $bt .= '    <p>'.$f.' on line '.($l-1).'</p>';
-                $bt .= '    <code>'.$this->formatBacktrace($v).'</code>';
-                $bt .= '</div>';
-            }
-            $content .= '</div>';
-            
-            $content .= '<div class="column-layout">';
-            $content .= '   <aside class="stacktrace-column">';
-            $content .= '       <div class="stacktrace">';
-            $content .= $bt;
-            $content .= '       </div>';
-            $content .= '   </aside>';
-            
-            $content .= '   <aside class="variables">';
-            $content .= $this->getVariables();
-            $content .= '   </aside>';
-            $content .= '   <hr style="clear:both;display:none;">';
-            $content .= '</div>';
-            
-            return $this->template($content);
-        }
-    }
-    
+		if (is_callable($this->template)) {
+			$callable = $this->template;
+			return $callable($type, $message, $file, $line);
+		} else if (is_string($this->template) && file_exists($this->template)) {
+			ob_start();
+			require $this->template;
+			return ob_get_clean();
+		} else if (is_string($this->template)) {
+			return $this->template;
+		} else {
+			return $this->hiddenErrorTemplate($type);
+		}
+	}
+
     /**
      * Check if displaying errors.
      *
-     * @param mixed $type
-     * @param boolean $displayErrors
+     * @param mixed $type Can be an exception, or PHP constant error
+     * @param boolean $displayErrors True if force error display, false otherwise
+	 *
+	 * @return boolean True if error can be show, false otherwise
      */
     private function displayErrors($type, $displayErrors)
     {
@@ -124,21 +98,174 @@ class HtmlFormatter implements FormatterInterface
             return ((error_reporting() & $type) || $displayErrors);
         }
     }
-    
-    /**
-     * Construct default template.
+		
+	/**
+	 * Set development template.
+	 *
+	 * @param string|callable $newTemplate You can choose a function or method (to generate template dynamically).
+	 *
+	 * @return void
+	 */
+	public function setErrorTemplate($newTemplate)
+	{
+		if (is_callable($newTemplate) || is_string($newTemplate)) {
+			$this->template = $newTemplate;
+		}
+	}
+	
+	/**
+	 * Add an hidden error template.
+	 *
+	 * @param interger $errorCode 
+	 * @param string|callable $template
+	 *
+	 * @return void
+	 */
+	public function addHiddenErrorTemplate($errorCode, $template)
+	{
+		$this->hiddenErrorTemplates[$errorCode] = $template;
+	}
+	
+	/**
+     * Display hidden error template.
+	 *
+	 * @param mixed $type Can be an exception, or PHP constant error
      *
-     * @param string $content
+     * @return string String containing error
      */
-    private function template($content)
+    private function hiddenErrorTemplate($type)
     {
-        $template = '<!DOCTYPE html>';
+		$templateCode = HtmlFormatter::DEFAULT_CODE;
+		
+		if ($type instanceof \Exception) {
+			$templateCode = $type->getCode();
+		}
+		if (!isset($this->hiddenErrorTemplates[$templateCode])) {
+			$templateCode = HtmlFormatter::DEFAULT_CODE;
+		}
+		
+		if (is_callable($this->hiddenErrorTemplates[$templateCode])) {
+			return $this->hiddenErrorTemplates[$templateCode]($type);
+		} else if (is_string($this->hiddenErrorTemplates[$templateCode]) && file_exists($this->hiddenErrorTemplates[$templateCode])) {
+			return file_get_contents($this->hiddenErrorTemplates[$templateCode]);
+		} else {
+			return $this->hiddenErrorTemplates[$templateCode];
+		}
+    }
+	
+	/**
+	 * Generate default hidden error template
+	 *
+	 * @return string Default hidden error template
+	 */
+	private function defaultHiddenErrorTemplate()
+	{
+		$template = '<!DOCTYPE html>';
+		$template .= '<html>';
+		$template .= '  <head>';
+		$template .= '      <meta charset="utf-8">';
+		$template .= '      <title>Error</title>';
+		$template .= '';
+		$template .= '      <style>';
+		$template .= '          *{margin: 0;font-family: sans-serif;box-sizing: border-box;}';
+		$template .= '          body, html { height:100%; }';
+		$template .= '          .wrapper { height:100%; width:100%; display:table; background:#F2F2F2;; overflow:hidden }';
+		$template .= '          .container { display:table-cell; vertical-align:middle; }';
+		$template .= '          .content { position: relative; width: 480px; height: 360px; margin: auto; background: #252525; color: #CECECE; border-radius: 15px; padding: 20px; }';
+		$template .= '          .error-title{color: #9E0000;}';
+		$template .= '      </style>';
+		$template .= '  </head>';
+		$template .= '  <body>';
+		$template .= '      <div class="wrapper">';
+		$template .= '          <div class="container">';
+		$template .= '              <div class="content">';
+		$template .= '                  <h1 class="error-title">Server internal error</h1>';
+		$template .= '                  <h2>Something went wrong</h2>';
+		$template .= '                  <p>Please try again later.</p>';
+		$template .= '              </div>';
+		$template .= '          </div>';
+		$template .= '      </div>';
+		$template .= '  </body>';
+		$template .= '</html>';
+		
+		return $template;
+	}
+	
+	/**
+	 * Generate default development display.
+	 *
+	 * @param mixed $type
+     * @param string $message
+     * @param string $file
+     * @param int $line
+	 *
+	 * @return string Default development error
+	 */
+	private function defaultTemplate($type, $message, $file, $line)
+	{
+		// Get error title
+		if (is_object($type)) {
+			$title = get_class($type);
+			$type = 'exception';
+		} else {
+			$title = $this->errorTitle($type);
+			$type = $this->errorClass($type);
+		}
+
+		$backtrace = debug_backtrace(DEBUG_BACKTRACE_PROVIDE_OBJECT|DEBUG_BACKTRACE_IGNORE_ARGS);
+		array_shift($backtrace); // shift template call
+		array_shift($backtrace); // shift format call
+
+		// Page header
+		$content = '';
+		$content .= '<header class="error-header error-header--'.$type.'">';
+		$content .= '   <h1 class="error-title error-title--'.$type.'">'.$title.'</h1>';
+		$content .= '   <h2>'.$message.'</h2>';
+		$content .= '</header>';
+
+		// Error details
+		$content .= '<div class="error-details">';
+		$content .= $this->writeCode($file, $line, 0);
+
+		// $bt contains backtrace
+		$bt = '';
+		$bt .= '<div class="trace" data-trace="0">';
+		$bt .= '    <p>'.$file.' on line '.$line.'</p>';
+		$bt .= '    <strong>'.$message.'</strong>';
+		$bt .= '</div>';
+
+		foreach ($backtrace as $k => $v) {
+			$f = isset($v['file']) ? $v['file'] : '<#unknown file>';
+			$l = isset($v['line']) ? ($v['line']+1) : ':0';
+			$content .= $this->writeCode($f, $l-1, $k+1);
+
+			$bt .= '<div class="trace" data-trace="'.($k+1).'">';
+			$bt .= '    <p>'.$f.' on line '.($l-1).'</p>';
+			$bt .= '    <code>'.$this->formatBacktrace($v).'</code>';
+			$bt .= '</div>';
+		}
+		$content .= '</div>';
+
+		$content .= '<div class="column-layout">';
+		$content .= '   <aside class="stacktrace-column">';
+		$content .= '       <div class="stacktrace">';
+		$content .= $bt;
+		$content .= '       </div>';
+		$content .= '   </aside>';
+
+		$content .= '   <aside class="variables">';
+		$content .= $this->getVariables();
+		$content .= '   </aside>';
+		$content .= '   <hr style="clear:both;display:none;">';
+		$content .= '</div>';
+		
+		$template = '<!DOCTYPE html>';
         $template .= '<html>';
         $template .= '<head>';
         $template .= '<meta charset="utf-8">';
         $template .= '<meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">';
         $template .= '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">';
-        $template .= '<title>Error | </title>';
+        $template .= '<title>Error | '.$title.'</title>';
         $template .= $this->css();
         $template .= '</head>';
         $template .= '<body>';
@@ -151,7 +278,7 @@ class HtmlFormatter implements FormatterInterface
     }
     
     /**
-     * Generate stylesheet.
+     * Generate stylesheet for default template.
      *
      * @return string Css datas
      */
@@ -201,7 +328,7 @@ class HtmlFormatter implements FormatterInterface
     }
     
     /**
-     * Generate javascript
+     * Generate script for default template.
      *
      * @return string The script
      */
@@ -227,7 +354,7 @@ class HtmlFormatter implements FormatterInterface
     }
         
     /**
-     * Format the code datas
+     * Format code datas
      *
      * @param string $file File must be display
      * @param integer $errorLine The error line number
@@ -313,51 +440,7 @@ class HtmlFormatter implements FormatterInterface
     }
     
     /**
-     * Used to generate default no display errors template.
-     *
-     * @return string String containing default no display template
-     */
-    private function noDisplayErrorTemplate()
-    {
-        $template = '';
-            
-        if (!empty($this->noDisplayTemplate) && file_exists($this->noDisplayTemplate)) {
-            $template = file_get_contents($this->noDisplayTemplate);
-        } else {
-            $template .= '<!DOCTYPE html>';
-            $template .= '<html>';
-            $template .= '  <head>';
-            $template .= '      <meta charset="utf-8">';
-            $template .= '      <title>Error</title>';
-            $template .= '';
-            $template .= '      <style>';
-            $template .= '          *{margin: 0;font-family: sans-serif;box-sizing: border-box;}';
-            $template .= '          body, html { height:100%; }';
-            $template .= '          .wrapper { height:100%; width:100%; display:table; background:#F2F2F2;; overflow:hidden }';
-            $template .= '          .container { display:table-cell; vertical-align:middle; }';
-            $template .= '          .content { position: relative; width: 480px; height: 360px; margin: auto; background: #252525; color: #CECECE; border-radius: 15px; padding: 20px; }';
-            $template .= '          .error-title{color: #9E0000;}';
-            $template .= '      </style>';
-            $template .= '  </head>';
-            $template .= '  <body>';
-            $template .= '      <div class="wrapper">';
-            $template .= '          <div class="container">';
-            $template .= '              <div class="content">';
-            $template .= '                  <h1 class="error-title">Server internal error</h1>';
-            $template .= '                  <h2>Something went wrong</h2>';
-            $template .= '                  <p>Please try again later.</p>';
-            $template .= '              </div>';
-            $template .= '          </div>';
-            $template .= '      </div>';
-            $template .= '  </body>';
-            $template .= '</html>';
-        }
-
-        return $template;
-    }
-    
-    /**
-     * Generate title frome error level.
+     * Generate title from error level.
      *
      * @param int $errorLevel
      *
